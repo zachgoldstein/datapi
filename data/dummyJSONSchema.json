@@ -1,0 +1,73 @@
+{
+  "ID": {
+    "searchable": true,
+    "optional": false,
+    "type": "int64"
+  },
+  "Name": {
+    "searchable": true,
+    "optional": false,
+    "type": "string"
+  },
+  "Date": {
+    "searchable": true,
+    "optional": false,
+    "type": "date"
+  },
+  "TotalPlumbuses": {
+    "searchable": true,
+    "optional": false,
+    "type": "int32"
+  },
+  "HasExistentialIdentityCrisis": {
+    "searchable": true,
+    "optional": false,
+    "type": "boolean"
+  },
+
+  "Address": {
+    "searchable": false,
+    "optional": true,
+    "type": "string"
+  },
+  "Text": {
+    "searchable": false,
+    "optional": true,
+    "type": "string"
+  },
+  "Job": {
+    "searchable": false,
+    "optional": true,
+    "type": "string"
+  },
+  "PhoneNumber": {
+    "searchable": false,
+    "optional": true,
+    "type": "string"
+  },
+  "FavoriteColor": {
+    "searchable": false,
+    "optional": true,
+    "type": "string"
+  },
+  "Company": {
+    "searchable": false,
+    "optional": true,
+    "type": "string"
+  },
+  "CompanyCatchPhrase": {
+    "searchable": false,
+    "optional": true,
+    "type": "string"
+  },
+  "CompanyBS": {
+    "searchable": false,
+    "optional": true,
+    "type": "string"
+  },
+  "Username": {
+    "searchable": false,
+    "optional": true,
+    "type": "string"
+  }
+}
