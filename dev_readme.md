@@ -25,6 +25,22 @@ To retrieve data from the API:
 ```
 curl 'http://localhost:8123/?query=ID&value=1000100'
 ```
+Returns:
+☁  datatoapi [master] ⚡ curl 'http://localhost:8123/?query=ID&value=1000101' | python -m json.tool
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100   329  100   329    0     0  53837      0 --:--:-- --:--:-- --:--:-- 54833
+{
+    "company": "Lueilwitz, Bradtke and Barton",
+    "company_catch_phrase": "Profit-focused intangible open architecture",
+    "date": "2018-03-06T18:16:39.397278",
+    "distance": 0.9448579873810617,
+    "has_existential_identity_crisis": true,
+    "id": 1000101,
+    "name": "Hosie Prohaska I",
+    "phone_number": "05520136626",
+    "total_plumbuses": 329997
+}
 
 Profiling notes:
 

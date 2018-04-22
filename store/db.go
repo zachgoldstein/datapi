@@ -13,6 +13,7 @@ import (
 
 type Datastore interface {
 	GetOneIndex(schemaItem SchemaItem, value interface{}) (*Index, error)
+	GetManyIndexes(schemaItem SchemaItem, values []interface{}) ([]*Index, error)
 	SaveIndex(data *DummyIndexData, block *DataBlock) error
 }
 
@@ -84,46 +85,34 @@ func OpenDatabase(location string) (*DB, error) {
 	return &DB{db}, nil
 }
 
-func (db *DB) GetOneIndex(schemaItem SchemaItem, value interface{}) (*Index, error) {
-	if schemaItem.Searchable == false {
-		return nil, fmt.Errorf("Field in schema is not searchable: %s", schemaItem.Name)
-	}
-
-	stringValue, ok := value.(string)
-	if !ok {
-		return &Index{}, fmt.Errorf("Could not convert value to string: %s", value)
-	}
-
-	var indexData DummyIndexData
-	var err error
-	if schemaItem.Type == "string" {
-		err = db.One(schemaItem.Name, stringValue, &indexData)
-	} else if schemaItem.Type == "int64" {
+func convertToSchemaType(typeName, stringValue string) (interface{}, error) {
+	if typeName == "string" {
+		return stringValue, nil
+	} else if typeName == "int64" {
 		int64Value, convErr := strconv.ParseInt(stringValue, 10, 64)
 		if convErr != nil {
 			return &Index{}, fmt.Errorf("Couldn't cast value to int64: %s", convErr)
 		}
-		err = db.One(schemaItem.Name, int64Value, &indexData)
-	} else if schemaItem.Type == "int32" {
+		return int64Value, nil
+	} else if typeName == "int32" {
 		int32Value, convErr := strconv.ParseInt(stringValue, 10, 32)
 		if convErr != nil {
 			return &Index{}, fmt.Errorf("Couldn't cast value to int64: %s", convErr)
 		}
-		err = db.One(schemaItem.Name, int32Value, &indexData)
-	} else if schemaItem.Type == "float32" {
+		return int32Value, nil
+	} else if typeName == "float32" {
 		float32Value, convErr := strconv.ParseFloat(stringValue, 32)
 		if convErr != nil {
 			return &Index{}, fmt.Errorf("Couldn't cast value to float32: %s", convErr)
 		}
-		fmt.Printf("Looking for %s with %f \n", schemaItem.Name, float32Value)
-		err = db.One(schemaItem.Name, float32Value, &indexData)
-	} else if schemaItem.Type == "float64" {
+		return float32Value, nil
+	} else if typeName == "float64" {
 		float64Value, convErr := strconv.ParseFloat(stringValue, 64)
 		if convErr != nil {
 			return &Index{}, fmt.Errorf("Couldn't cast value to float64: %s", convErr)
 		}
-		err = db.One(schemaItem.Name, float64Value, &indexData)
-	} else if schemaItem.Type == "date" {
+		return float64Value, nil
+	} else if typeName == "date" {
 		// possibleDateLayout := []string{
 		// 	time.ANSIC,
 		// 	time.UnixDate,
@@ -158,17 +147,50 @@ func (db *DB) GetOneIndex(schemaItem SchemaItem, value interface{}) (*Index, err
 		// 	return &Index{}, fmt.Errorf("Couldn't cast value to date: %s", convErr)
 		// }
 		// err = db.One(schemaItem.Name, dateValue, &indexData)
-
-		err = db.One(schemaItem.Name, stringValue, &indexData)
-	} else if schemaItem.Type == "boolean" {
+		return stringValue, nil
+	} else if typeName == "boolean" {
 		boolValue, convErr := strconv.ParseBool(stringValue)
 		if convErr != nil {
 			return &Index{}, fmt.Errorf("Couldn't cast value to boolean: %s", convErr)
 		}
-		fmt.Printf("Looking for %s with %t \n", schemaItem.Name, boolValue)
-		err = db.One(schemaItem.Name, boolValue, &indexData)
+		fmt.Printf("Looking for %s with %t \n", stringValue, boolValue)
+		return boolValue, nil
+	}
+	return nil, fmt.Errorf("Couldn't find a type to convert value into: %s", stringValue)
+}
+
+func (db *DB) GetManyIndexes(schemaItem SchemaItem, values []interface{}) ([]*Index, error) {
+	indexes := []*Index{}
+	for v := range values {
+		index, err := db.GetOneIndex(schemaItem, v)
+		if err != nil {
+			fmt.Printf("Error encountered looking for index, continuing. Value: %#v, Error: %s \n", v, err)
+			continue
+		}
+		indexes = append(indexes, index)
+	}
+	if len(indexes) == 0 {
+		return indexes, fmt.Errorf("No indexes found")
+	}
+	return indexes, nil
+}
+
+func (db *DB) GetOneIndex(schemaItem SchemaItem, value interface{}) (*Index, error) {
+	if schemaItem.Searchable == false {
+		return nil, fmt.Errorf("Field in schema is not searchable: %s", schemaItem.Name)
 	}
 
+	stringValue, ok := value.(string)
+	if !ok {
+		return &Index{}, fmt.Errorf("Could not convert value to string: %s", value)
+	}
+
+	var indexData DummyIndexData
+	val, err := convertToSchemaType(schemaItem.Type, stringValue)
+	if err != nil {
+		return &Index{}, fmt.Errorf("Couldn't convert to schema type: %s", err)
+	}
+	err = db.One(schemaItem.Name, val, &indexData)
 	if err != nil {
 		return &Index{}, fmt.Errorf("Couldn't retrieve index from bolt: %s", err)
 	}
@@ -203,3 +225,31 @@ func (db *DB) SaveIndex(data *DummyIndexData, block *DataBlock) error {
 	block.RefIndex = h.Sum32()
 	return db.Save(block)
 }
+
+// func (db *DB) SaveIndex(data *interface{}, block *DataBlock) error {
+// 	t := reflect.TypeOf(data)
+// 	for i := 0; i < t.NumField(); i++ {
+// 		// Get the field, returns https://golang.org/pkg/reflect/#StructField
+// 		field := t.Field(i)
+// 		field.Tag = "`json:name-field`"
+// 		// FIX ME, ADD STORM TAG HERE
+//
+// 		// fmt.Printf("%d. %v (%v), tag: '%v'\n", i+1, field.Name, field.Type.Name(), tag)
+// 		fmt.Printf("%d. %v (%v) \n", i+1, field.Name, field.Type.Name())
+// 	}
+//
+// 	timestamp := time.Now().Unix()
+// 	indexKey := fmt.Sprintf("%s-%d-%d-%d", block.File.Address, block.Start, block.End, timestamp)
+// 	h := fnv.New32a()
+// 	h.Write([]byte(indexKey))
+//
+// 	data.Pk = h.Sum32()
+// 	fmt.Printf("Saving this data %#v \n", data)
+// 	err := db.Save(data)
+// 	if err != nil {
+// 		return err
+// 	}
+//
+// 	block.RefIndex = h.Sum32()
+// 	return db.Save(block)
+// }

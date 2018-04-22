@@ -15,8 +15,9 @@ const DefaultStorageType = "LocalFS"
 var indexCount = 0
 
 type Storage interface {
-	CreateIndexes(db *store.DB) error
-	CreateIndex(db *store.DB, data string, prevPos int64, currentPos int64) error
+	CreateIndexes(db *store.DB, indexFormat interface{}) error
+	BuildIndexFormat(db *store.DB) (interface{}, error)
+	CreateIndex(db *store.DB, data string, prevPos int64, currentPos int64, indexFormat interface{}) error
 	RetrieveData(block store.DataBlock) (string, error)
 }
 
@@ -40,7 +41,16 @@ func NewLocalFS(location string) *LocalFS {
 	}
 }
 
-func (fs *LocalFS) CreateIndexes(db *store.DB) error {
+func (fs *LocalFS) BuildIndexFormat(db *store.DB) (interface{}, error) {
+	// Scan through some tuneable portion of the data
+	// Build up an interface that represents the data
+	// Build up meta data on db?
+	// Add storm field tags for data
+	var i interface{}
+	return i, nil
+}
+
+func (fs *LocalFS) CreateIndexes(db *store.DB, indexFormat interface{}) error {
 	scanner := bufio.NewScanner(fs.File)
 	currentPos := int64(0)
 	prevPos := int64(0)
@@ -56,7 +66,7 @@ func (fs *LocalFS) CreateIndexes(db *store.DB) error {
 
 	var wg sync.WaitGroup
 	for w := 1; w <= 10; w++ {
-		go IndexWorker(w, fs, db, &wg, indexJobs)
+		go IndexWorker(w, fs, db, &wg, indexFormat, indexJobs)
 	}
 
 	for scanner.Scan() {
@@ -74,9 +84,9 @@ func (fs *LocalFS) CreateIndexes(db *store.DB) error {
 	return scanner.Err()
 }
 
-func IndexWorker(workerId int, fs *LocalFS, db *store.DB, wg *sync.WaitGroup, indexJobs <-chan IndexData) {
+func IndexWorker(workerId int, fs *LocalFS, db *store.DB, wg *sync.WaitGroup, indexFormat interface{}, indexJobs <-chan IndexData) {
 	for j := range indexJobs {
-		err := fs.CreateIndex(db, j.Data, j.Start, j.End)
+		err := fs.CreateIndex(db, j.Data, j.Start, j.End, indexFormat)
 		if err != nil {
 			fmt.Println(fmt.Errorf("Error creating index: %s", err))
 		}
@@ -84,8 +94,9 @@ func IndexWorker(workerId int, fs *LocalFS, db *store.DB, wg *sync.WaitGroup, in
 	}
 }
 
-func (fs *LocalFS) CreateIndex(db *store.DB, data string, prevPos int64, currentPos int64) error {
+func (fs *LocalFS) CreateIndex(db *store.DB, data string, prevPos int64, currentPos int64, indexFormat interface{}) error {
 	indexData := store.DummyIndexData{}
+	// UNMARSHALL INTO INTERFACE TYPE>>>>>
 	err := json.Unmarshal([]byte(data), &indexData)
 	if err != nil {
 		return fmt.Errorf("Couldn't unmarshal text: %s", data)

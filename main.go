@@ -32,7 +32,9 @@ func main() {
 	}
 
 	fs := storage.NewLocalFS(FSLocation)
-	err = fs.CreateIndexes(db)
+	// fs.BuildIndexFormat(db)
+	var iFmt interface{}
+	err = fs.CreateIndexes(db, iFmt)
 	if err != nil {
 		fmt.Println(err.Error())
 		return
@@ -47,6 +49,7 @@ func main() {
 	r := mux.NewRouter()
 	// Routes consist of a path and a handler function.
 	r.HandleFunc("/", env.GetOne)
+	r.HandleFunc("/many", env.GetMany)
 
 	// Bind to a port and pass our router in
 	fmt.Println("Listening on port 8123")

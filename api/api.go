@@ -113,23 +113,71 @@ func isJSON(str string) bool {
 	return json.Unmarshal([]byte(str), &js) == nil
 }
 
-func (env *Env) GetOne(w http.ResponseWriter, r *http.Request) {
+func GetSchemaItem(r *http.Request) (store.SchemaItem, error) {
 	queryField := r.URL.Query().Get("query")
 	if queryField == "" {
-		err := fmt.Errorf("Expected request to have a query request parameter: %s", r.URL.Query().Encode())
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+		return store.SchemaItem{}, fmt.Errorf("Expected request to have a query request parameter: %s", r.URL.Query().Encode())
 	}
 	reqField := queryField
 	schemaItem, ok := dummyJSONSchema[reqField]
 	if !ok {
-		err := fmt.Errorf("Request field not found in schema: %s", reqField)
+		return store.SchemaItem{}, fmt.Errorf("Request field not found in schema: %s", reqField)
+	}
+	return schemaItem, nil
+}
+
+func GetQueryValue(r *http.Request) (string, error) {
+	queryValue := r.URL.Query().Get("value")
+	if queryValue == "" {
+		return "", fmt.Errorf("Expected request to have a query value parameter: %s", r.URL.Query().Encode())
+	}
+	return queryValue, nil
+}
+
+func (env *Env) GetMany(w http.ResponseWriter, r *http.Request) {
+	schemaItem, err := GetSchemaItem(r)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	queryValue := r.URL.Query().Get("value")
-	if queryValue == "" {
-		err := fmt.Errorf("Expected request to have a query value parameter: %s", r.URL.Query().Encode())
+
+	queryValue, err := GetQueryValue(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	index, err := env.DB.GetOneIndex(schemaItem, queryValue)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	fullRecord, err := env.Store.RetrieveData(index.DataBlock)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if !isJSON(fullRecord) {
+		err := fmt.Errorf("Retrieved record but data is malformed:\n%s", fullRecord)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Write([]byte(fullRecord))
+}
+
+// GetOne retrieves and returns a single record from the store
+func (env *Env) GetOne(w http.ResponseWriter, r *http.Request) {
+	schemaItem, err := GetSchemaItem(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	queryValue, err := GetQueryValue(r)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
