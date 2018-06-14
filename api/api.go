@@ -5,205 +5,148 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/blevesearch/bleve/search"
+	"github.com/gorilla/mux"
+	log "github.com/sirupsen/logrus"
+
+	"github.com/zachgoldstein/datatoapi/index"
 	"github.com/zachgoldstein/datatoapi/storage"
-	"github.com/zachgoldstein/datatoapi/store"
 )
 
-type Env struct {
-	DB    store.Datastore
-	Store storage.Storage
+type API struct {
+	indexStore  *index.IndexStore
+	realStorage storage.PhysicalStorer
 }
 
-var dummyJSONSchema = map[string]store.SchemaItem{
-	"ID": store.SchemaItem{
-		Searchable: true,
-		Optional:   false,
-		Type:       "int64",
-		Name:       "ID",
-	},
-	"Name": store.SchemaItem{
-		Searchable: true,
-		Optional:   false,
-		Type:       "string",
-		Name:       "Name",
-	},
-	"Date": store.SchemaItem{
-		Searchable: true,
-		Optional:   false,
-		Type:       "date",
-		Name:       "Date",
-	},
-	"TotalPlumbuses": store.SchemaItem{
-		Searchable: true,
-		Optional:   false,
-		Type:       "int32",
-		Name:       "TotalPlumbuses",
-	},
-	"Distance": store.SchemaItem{
-		Searchable: true,
-		Optional:   false,
-		Type:       "float64",
-		Name:       "Distance",
-	},
-	"HasExistentialIdentityCrisis": store.SchemaItem{
-		Searchable: true,
-		Optional:   false,
-		Type:       "string",
-		Name:       "HasExistentialIdentityCrisis",
-	},
-
-	"Address": store.SchemaItem{
-		Searchable: false,
-		Optional:   true,
-		Type:       "string",
-		Name:       "Address",
-	},
-	"Text": store.SchemaItem{
-		Searchable: false,
-		Optional:   true,
-		Type:       "string",
-		Name:       "Text",
-	},
-	"Job": store.SchemaItem{
-		Searchable: false,
-		Optional:   true,
-		Type:       "string",
-		Name:       "Job",
-	},
-	"PhoneNumber": store.SchemaItem{
-		Searchable: false,
-		Optional:   true,
-		Type:       "string",
-		Name:       "PhoneNumber",
-	},
-	"FavoriteColor": store.SchemaItem{
-		Searchable: false,
-		Optional:   true,
-		Type:       "string",
-		Name:       "FavoriteColor",
-	},
-	"Company": store.SchemaItem{
-		Searchable: false,
-		Optional:   true,
-		Type:       "string",
-		Name:       "Company",
-	},
-	"CompanyCatchPhrase": store.SchemaItem{
-		Searchable: false,
-		Optional:   true,
-		Type:       "string",
-		Name:       "CompanyCatchPhrase",
-	},
-	"CompanyBS": store.SchemaItem{
-		Searchable: false,
-		Optional:   true,
-		Type:       "string",
-		Name:       "CompanyBS",
-	},
-	"Username": store.SchemaItem{
-		Searchable: false,
-		Optional:   true,
-		Type:       "string",
-		Name:       "Username",
-	},
-}
-
-func isJSON(str string) bool {
-	var js json.RawMessage
-	return json.Unmarshal([]byte(str), &js) == nil
-}
-
-func GetSchemaItem(r *http.Request) (store.SchemaItem, error) {
-	queryField := r.URL.Query().Get("query")
-	if queryField == "" {
-		return store.SchemaItem{}, fmt.Errorf("Expected request to have a query request parameter: %s", r.URL.Query().Encode())
+func NewAPI(indexStore *index.IndexStore, realStorage storage.PhysicalStorer) *API {
+	return &API{
+		indexStore:  indexStore,
+		realStorage: realStorage,
 	}
-	reqField := queryField
-	schemaItem, ok := dummyJSONSchema[reqField]
+}
+
+func (api *API) Start(port int, indexStore *index.IndexStore, physStore storage.PhysicalStorer) error {
+	r := mux.NewRouter()
+	r.HandleFunc("/search/{search}", api.Search)
+	r.HandleFunc("/many", api.GetMany)
+	r.HandleFunc("/{field}/{value}", api.Get)
+
+	addr := fmt.Sprintf(":%v", port)
+	log.WithFields(log.Fields{
+		"port": addr,
+	}).Info("API Listening")
+
+	return http.ListenAndServe(addr, r)
+}
+
+func (api *API) Search(w http.ResponseWriter, r *http.Request) {
+	log.Info("API Searching for results")
+	vars := mux.Vars(r)
+
+	hits, err := api.indexStore.SearchHits(vars["search"], r.URL.Query())
+	if err != nil {
+		log.WithError(err).Error("Could not find index hits")
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	log.WithFields(log.Fields{
+		"hits": len(hits),
+	}).Info("Retrieved hits")
+
+	blockBytes, err := api.getDataBlockBytes(w, hits[0])
+	if err != nil {
+		log.WithError(err).Error("Could not get data block bytes")
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	fullRecord, err := storage.SearchRecordInDataChunk(blockBytes, vars["search"])
+	if err != nil {
+		log.WithError(err).Error("Could not find record in data chunk")
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	if !isJSON(fullRecord) {
+		err = fmt.Errorf("Retrieved record but data is malformed")
+		log.WithError(err).WithFields(log.Fields{
+			"record": fullRecord,
+		}).Error("Retrieved record but data is malformed")
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	w.Write([]byte(fullRecord))
+}
+
+func (api *API) Get(w http.ResponseWriter, r *http.Request) {
+	log.Info("API Retrieving results for field:value")
+
+	vars := mux.Vars(r)
+
+	hits, err := api.indexStore.GetHits(vars["field"], vars["value"])
+	if err != nil {
+		log.WithError(err).Error("Could not find index hits")
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	log.WithFields(log.Fields{
+		"hits": len(hits),
+	}).Info("Retrieved hits")
+	blockBytes, err := api.getDataBlockBytes(w, hits[0])
+	if err != nil {
+		log.WithError(err).Error("Could not get data block bytes")
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	fullRecord, err := storage.GetRecordInDataChunk(blockBytes, vars["field"], vars["value"])
+	if err != nil {
+		log.WithError(err).Error("Could not get record in data chunk")
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	if !isJSON(fullRecord) {
+		err = fmt.Errorf("Retrieved record but data is malformed")
+		log.WithError(err).WithFields(log.Fields{
+			"record": fullRecord,
+		}).Error("Retrieved record but data is malformed")
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	w.Write([]byte(fullRecord))
+}
+
+func (api *API) getDataBlockBytes(w http.ResponseWriter, hit *search.DocumentMatch) ([]byte, error) {
+	// Get the chunk of data containing the record we're interested in
+	_, ok := hit.Fields["RefKey"]
 	if !ok {
-		return store.SchemaItem{}, fmt.Errorf("Request field not found in schema: %s", reqField)
+		err := fmt.Errorf("Could not find refKey in search hit: %v", hit)
+		log.WithError(err).WithFields(log.Fields{
+			"hit": hit,
+		}).Error("Could not find refKey in search hit")
+		return nil, err
 	}
-	return schemaItem, nil
+	refKey := hit.Fields["RefKey"].(string)
+	dataBlock, err := api.indexStore.GetDataBlock(refKey)
+	if err != nil {
+		log.WithError(err).Error("Could not get data block")
+		return nil, err
+	}
+
+	blockBytes, err := api.realStorage.RetrieveDataBlockBytes(dataBlock)
+	if err != nil {
+		log.WithError(err).Error("Could not retrieve data block bytes")
+		return nil, err
+	}
+	return blockBytes, nil
 }
 
-func GetQueryValue(r *http.Request) (string, error) {
-	queryValue := r.URL.Query().Get("value")
-	if queryValue == "" {
-		return "", fmt.Errorf("Expected request to have a query value parameter: %s", r.URL.Query().Encode())
-	}
-	return queryValue, nil
+func (api *API) GetMany(w http.ResponseWriter, r *http.Request) {
+	fmt.Println("GOT REQUEST TO GET MANY ITEMS")
 }
 
-func (env *Env) GetMany(w http.ResponseWriter, r *http.Request) {
-	schemaItem, err := GetSchemaItem(r)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	queryValue, err := GetQueryValue(r)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	index, err := env.DB.GetOneIndex(schemaItem, queryValue)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	fullRecord, err := env.Store.RetrieveData(index.DataBlock)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	if !isJSON(fullRecord) {
-		err := fmt.Errorf("Retrieved record but data is malformed:\n%s", fullRecord)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.Write([]byte(fullRecord))
+func isJSON(str []byte) bool {
+	var js json.RawMessage
+	return json.Unmarshal(str, &js) == nil
 }
-
-// GetOne retrieves and returns a single record from the store
-func (env *Env) GetOne(w http.ResponseWriter, r *http.Request) {
-	schemaItem, err := GetSchemaItem(r)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	queryValue, err := GetQueryValue(r)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	index, err := env.DB.GetOneIndex(schemaItem, queryValue)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	fullRecord, err := env.Store.RetrieveData(index.DataBlock)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	if !isJSON(fullRecord) {
-		err := fmt.Errorf("Retrieved record but data is malformed:\n%s", fullRecord)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.Write([]byte(fullRecord))
-}
-
-// GetMany retrieves a set of results
-// Multiple possible values could be requested, or our request could have multiple matching records
-// Skip, Limit and Reverse, gt, ls, sort
-// func (env *Env) GetMany(w http.ResponseWriter, r *http.Request) {}

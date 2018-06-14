@@ -3,3 +3,5 @@ tasks.md
 venv
 data
 datatoapi.db
+datatoapi.index
+notes

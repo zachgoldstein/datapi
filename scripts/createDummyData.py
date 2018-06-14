@@ -38,4 +38,4 @@ def write_data(num_data, open_file):
     print("wrote data %s", i)
 
 with open("data.jsonfiles", "w") as f:
-  write_data(1000, f)
+  write_data(100, f)

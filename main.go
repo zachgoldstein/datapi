@@ -1,58 +1,49 @@
 package main
 
 import (
+	"flag"
 	"fmt"
-	"log"
 
-	"github.com/gorilla/mux"
-
-	"github.com/zachgoldstein/datatoapi/api"
-	"github.com/zachgoldstein/datatoapi/storage"
-	"github.com/zachgoldstein/datatoapi/store"
-
-	"net/http"
-	_ "net/http/pprof"
+	log "github.com/sirupsen/logrus"
+	"github.com/zachgoldstein/datatoapi/engine"
 )
 
-const DBLocation = "datatoapi.db"
-const FSLocation = "./data/data.jsonfiles"
+const TitleASCII = `
+
+██████╗  █████╗ ████████╗ █████╗ ██████╗ ██╗
+██╔══██╗██╔══██╗╚══██╔══╝██╔══██╗██╔══██╗██║
+██║  ██║███████║   ██║   ███████║██████╔╝██║
+██║  ██║██╔══██║   ██║   ██╔══██║██╔═══╝ ██║
+██████╔╝██║  ██║   ██║   ██║  ██║██║     ██║
+╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝╚═╝     ╚═╝
+
+`
 
 func main() {
-	fmt.Println("Starting datatoapi")
 
-	go func() {
-		log.Println(http.ListenAndServe("localhost:6060", nil))
-	}()
+	var port = flag.Int("port", 8123, "What port will Datapi run on?")
+	var indexPath = flag.String("index", "./datatoapi.index", "Where will indexes be stored?")
+	var storagePath = flag.String("storage", "https://s3.amazonaws.com/datatoapi/data.jsonfiles", "Where is the data you'd like to expose stored?")
+	var logType = flag.String("logType", "normal", "What type of logs should datapi output? Options are normal, json")
+	// "storagePath": "./data/dataDir/",
 
-	db, err := store.OpenDatabase(DBLocation)
-	defer db.Close()
-	if err != nil {
-		fmt.Println(err)
-		return
+	flag.Parse()
+	if *logType == "json" {
+		log.SetFormatter(&log.JSONFormatter{})
 	}
 
-	fs := storage.NewLocalFS(FSLocation)
-	// fs.BuildIndexFormat(db)
-	var iFmt interface{}
-	err = fs.CreateIndexes(db, iFmt)
-	if err != nil {
-		fmt.Println(err.Error())
-		return
+	config := engine.Config{
+		IndexPath:   *indexPath,
+		StoragePath: *storagePath,
+		Port:        *port,
 	}
+	fmt.Println(TitleASCII)
+	log.WithFields(log.Fields{
+		"indexPath":   config.IndexPath,
+		"storagePath": config.StoragePath,
+		"port":        config.Port,
+	}).Info("Starting Datatoapi")
 
-	env := &api.Env{
-		DB:    db,
-		Store: fs,
-	}
-
-	// Start API based on our schema
-	r := mux.NewRouter()
-	// Routes consist of a path and a handler function.
-	r.HandleFunc("/", env.GetOne)
-	r.HandleFunc("/many", env.GetMany)
-
-	// Bind to a port and pass our router in
-	fmt.Println("Listening on port 8123")
-	log.Fatal(http.ListenAndServe(":8123", r))
-
+	datatoapiEngine := engine.NewEngine()
+	datatoapiEngine.Start(config)
 }

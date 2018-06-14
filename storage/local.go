@@ -2,150 +2,140 @@ package storage
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
 	"os"
-	"sync"
+	"path/filepath"
 
-	"github.com/zachgoldstein/datatoapi/store"
+	"github.com/zachgoldstein/datatoapi/models"
 )
 
-const DefaultStorageType = "LocalFS"
-
-var indexCount = 0
-
-type Storage interface {
-	CreateIndexes(db *store.DB, indexFormat interface{}) error
-	BuildIndexFormat(db *store.DB) (interface{}, error)
-	CreateIndex(db *store.DB, data string, prevPos int64, currentPos int64, indexFormat interface{}) error
-	RetrieveData(block store.DataBlock) (string, error)
-}
-
 type LocalFS struct {
-	File *os.File
+	FSLocation string
+	FilePaths  []string
 }
 
-type IndexData struct {
-	Data  string
-	Start int64
-	End   int64
+// NewLocalFS creates an instance of LocalFS
+func NewLocalFS() *LocalFS {
+	return &LocalFS{}
 }
 
-func NewLocalFS(location string) *LocalFS {
-	f, err := os.Open(location)
+// Start initialises the local filesystem, testing to make sure the data is accessible
+func (fs *LocalFS) Start(path string, credentials map[string]interface{}) error {
+	fs.FSLocation = path
+	return fs.TestData()
+}
+
+// TestData makes sure we have access to the file(s) we need to interact with
+func (fs *LocalFS) TestData() error {
+	f, err := os.Open(fs.FSLocation)
+	if err != nil {
+		return err
+	}
+	stat, err := f.Stat()
 	if err != nil {
 		fmt.Println(fmt.Errorf("Couldn't find data file: %s", err))
 	}
-	return &LocalFS{
-		File: f,
+	if stat.IsDir() {
+		fmt.Println("Data is a directory, will walk path to find files")
 	}
+
+	f.Close()
+	return err
 }
 
-func (fs *LocalFS) BuildIndexFormat(db *store.DB) (interface{}, error) {
-	// Scan through some tuneable portion of the data
-	// Build up an interface that represents the data
-	// Build up meta data on db?
-	// Add storm field tags for data
-	var i interface{}
-	return i, nil
-}
-
-func (fs *LocalFS) CreateIndexes(db *store.DB, indexFormat interface{}) error {
-	scanner := bufio.NewScanner(fs.File)
-	currentPos := int64(0)
-	prevPos := int64(0)
-	split := func(data []byte, atEOF bool) (advance int, token []byte, err error) {
-		advance, token, err = bufio.ScanLines(data, atEOF)
-		prevPos = currentPos
-		currentPos += int64(advance)
-		return
+// ScanData will read all data, serialising it into a interface{}
+// and putting it on a channel for consumption. (JSONfiles are used here)
+func (fs *LocalFS) ScanData(interfaceChan chan<- interface{}) error {
+	fs.FilePaths = []string{}
+	err := filepath.Walk(fs.FSLocation, fs.visitPath)
+	if err != nil {
+		return err
 	}
-	scanner.Split(split)
-
-	indexJobs := make(chan IndexData, 100)
-
-	var wg sync.WaitGroup
-	for w := 1; w <= 10; w++ {
-		go IndexWorker(w, fs, db, &wg, indexFormat, indexJobs)
-	}
-
-	for scanner.Scan() {
-		wg.Add(1)
-		txt := scanner.Text()
-		indexData := IndexData{
-			Data:  txt,
-			Start: prevPos,
-			End:   currentPos,
-		}
-		indexJobs <- indexData
-	}
-	wg.Wait()
-
-	return scanner.Err()
-}
-
-func IndexWorker(workerId int, fs *LocalFS, db *store.DB, wg *sync.WaitGroup, indexFormat interface{}, indexJobs <-chan IndexData) {
-	for j := range indexJobs {
-		err := fs.CreateIndex(db, j.Data, j.Start, j.End, indexFormat)
+	for _, location := range fs.FilePaths {
+		f, err := os.Open(location)
 		if err != nil {
-			fmt.Println(fmt.Errorf("Error creating index: %s", err))
+			return err
 		}
-		wg.Done()
-	}
-}
+		defer f.Close()
+		scanner := bufio.NewScanner(f)
+		err = WriteJSONToInterfaceChan(scanner, interfaceChan)
+		if err != nil {
+			return err
+		}
 
-func (fs *LocalFS) CreateIndex(db *store.DB, data string, prevPos int64, currentPos int64, indexFormat interface{}) error {
-	indexData := store.DummyIndexData{}
-	// UNMARSHALL INTO INTERFACE TYPE>>>>>
-	err := json.Unmarshal([]byte(data), &indexData)
-	if err != nil {
-		return fmt.Errorf("Couldn't unmarshal text: %s", data)
-	}
-	block := store.DataBlock{
-		Start: prevPos,
-		End:   currentPos,
-		File: store.File{
-			Address: "./data/data.jsonfiles",
-			Type:    DefaultStorageType,
-		},
-	}
-	err = db.SaveIndex(&indexData, &block)
-	if err != nil {
-		return fmt.Errorf("Couldn't save index to bolt: %s", err)
+		scanner.Split(bufio.ScanLines)
+		err = scanner.Err()
+		if err != nil {
+			return err
+		}
 	}
 
-	indexCount++
-	if indexCount%10 == 0 {
-		fmt.Printf("saved indexCount items to db: %d \n", indexCount)
-	}
+	close(interfaceChan)
+	fmt.Println("Finished scanning data into interface channel")
 	return nil
 }
 
-func (fs *LocalFS) RetrieveData(block store.DataBlock) (string, error) {
+func (fs *LocalFS) ScanDataBlocksForPath(path string, dataChan chan<- models.IndexData, blockChan chan<- models.DataBlock) error {
+	fmt.Printf("Scanning data at %v \n", path)
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	err = WriteJSONToDataChans(path, scanner, dataChan, blockChan)
+	if err != nil {
+		return err
+	}
+
+	fmt.Println("Finished scanning")
+	return scanner.Err()
+}
+
+func (fs *LocalFS) visitPath(path string, f os.FileInfo, err error) error {
+	fmt.Printf("Visited: %s\n", path)
+	if f.IsDir() {
+		return nil
+	}
+	fs.FilePaths = append(fs.FilePaths, path)
+	return nil
+}
+
+// ScanDataBlocks will read all data, serialising the full data and blocks of data to send on channels
+// Focused on Jsonfiles for now.
+func (fs *LocalFS) ScanDataBlocks(dataChan chan<- models.IndexData, blockChan chan<- models.DataBlock) error {
+	fs.FilePaths = []string{}
+	err := filepath.Walk(fs.FSLocation, fs.visitPath)
+	if err != nil {
+		return err
+	}
+	for _, path := range fs.FilePaths {
+		err := fs.ScanDataBlocksForPath(path, dataChan, blockChan)
+		if err != nil {
+			return err
+		}
+	}
+	close(dataChan)
+	close(blockChan)
+
+	return nil
+}
+
+func (fs *LocalFS) RetrieveDataBlockBytes(block *models.DataBlock) ([]byte, error) {
 	f, err := os.Open(block.File.Address)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	o2, err := f.Seek(block.Start, 0)
+	_, err = f.Seek(block.Start, 0)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	byteLength := block.End - block.Start
 	retrievedBytes := make([]byte, byteLength)
-	n2, err := f.Read(retrievedBytes)
+	_, err = f.Read(retrievedBytes)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	fmt.Printf("%d bytes @ %d: %s\n", n2, o2, string(retrievedBytes))
-	// fullRecord := DummyIndex{}
-	// err = json.Unmarshal(retrievedBytes, &fullRecord)
-	// if err != nil {
-	// 	return "", err
-	// }
-	// fmt.Printf("Retrieved full record %#v \n", fullRecord)
-	// exportedRecord, err := json.Marshal(fullRecord)
-	// if err != nil {
-	// 	return "", err
-	// }
-	return string(retrievedBytes), nil
+
+	return retrievedBytes, nil
 }
