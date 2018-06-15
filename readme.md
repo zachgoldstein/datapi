@@ -20,6 +20,24 @@
 - Your use case has you reading alot more than writing
 - You don't want to spend time writing routing or serialisation code
 
+## An example of how this would be done previously:
+
+If you have flat files sitting in s3, you can retrieve the whole record and search without alot of effort, but it takes quite a bit of time.
+```
+aws s3 cp s3://datatoapi/data.jsonfiles - | jq 'select(.username == "wyman.maye")' -c  
+```
+Takes about 3.53 secs. (requires downloading the entire file).
+
+How this would work if you're running datapi?
+```
+curl "http://127.0.0.1:8123/username/wyman.maye"
+```
+Took 0.757 secs.
+
+Why is this faster? Datapi has built an index to find the record more quickly, and only downloads a small chunk of the file.
+
+In this example, the file we're interested in is very small (890K), but when you're looking at larger files, the difference in performance will be much more significant.
+
 ## Installation
 
 Just want a binary you can run?
