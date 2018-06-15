@@ -24,8 +24,6 @@ type PhysicalStorer interface {
 	ScanDataBlocks(dataChan chan<- models.IndexData, blockChan chan<- models.DataBlock) error
 
 	RetrieveDataBlockBytes(block *models.DataBlock) ([]byte, error)
-
-	// GetMetadata() (map[string]interface{}, error)
 }
 
 func GetRefKey(location string) string {

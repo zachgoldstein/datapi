@@ -25,7 +25,6 @@ func main() {
 	var indexPath = flag.String("index", "./datatoapi.index", "Where will indexes be stored?")
 	var storagePath = flag.String("storage", "https://s3.amazonaws.com/datatoapi/data.jsonfiles", "Where is the data you'd like to expose stored?")
 	var logType = flag.String("logType", "normal", "What type of logs should datapi output? Options are normal, json")
-	// "storagePath": "./data/dataDir/",
 
 	flag.Parse()
 	if *logType == "json" {

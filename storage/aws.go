@@ -45,7 +45,6 @@ func (awsfs *AWSFS) Start(path string, credentials map[string]interface{}) error
 	return awsfs.TestData()
 }
 
-// example path: https://s3.amazonaws.com/datatoapi/data.jsonfiles
 func getPathDetails(awsURL string) (bucket, key string) {
 	awsURL = strings.Replace(awsURL, "https://s3.amazonaws.com/", "", -1)
 	urlParts := strings.SplitN(awsURL, "/", 2)
