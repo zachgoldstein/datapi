@@ -127,15 +127,34 @@ func (is *IndexStore) CreateNewIndexes(searchPath, dataPath string) (searchIndex
 func (is *IndexStore) BuildDataMapping() (*mapping.IndexMappingImpl, error) {
 	log.Info("Building index mapping")
 
-	dataChan := make(chan interface{}, DefaultChanSize)
-	go is.store.ScanData(dataChan)
+	dataChan := make(chan models.IndexData, DefaultChanSize)
+	blockChan := make(chan models.DataBlock, DefaultChanSize)
+	statusChan := make(chan interface{}, DefaultChanSize)
+	go is.store.ScanDataBlocks(dataChan, blockChan)
+
+	status := &IndexingStatus{
+		Mutex:          &sync.Mutex{},
+		IndexesWritten: uint64(0),
+	}
+
+	go LogStatusChannel(statusChan, status)
 
 	indexMapping := bleve.NewIndexMapping()
 	dataMapping := bleve.NewDocumentMapping()
 	indexMapping.AddDocumentMapping("data", dataMapping)
 
+	go func() {
+		for _ = range blockChan {
+			continue
+		}
+	}()
+	const recordsNeededForMapping = 50
+	recordsScanned := 0
 	for data := range dataChan {
-		for k, v := range data.(map[string]interface{}) {
+		if recordsScanned > recordsNeededForMapping {
+			break
+		}
+		for k, v := range data.Data {
 			_, ok := v.(string)
 			if ok {
 				strFieldMapping := bleve.NewTextFieldMapping()
@@ -169,10 +188,12 @@ func (is *IndexStore) BuildDataMapping() (*mapping.IndexMappingImpl, error) {
 				continue
 			}
 		}
-		break
+		recordsScanned++
 	}
 
-	log.Info("Built index mapping")
+	log.WithFields(log.Fields{
+		"numIndexes": int(status.IndexesWritten),
+	}).Info("Built Indexes")
 	return indexMapping, nil
 }
 
@@ -181,52 +202,55 @@ type IndexStatus struct {
 	Status string
 }
 
+type IndexingStatus struct {
+	Mutex          *sync.Mutex
+	IndexesWritten uint64
+}
+
+func LogStatusChannel(statusChan chan interface{}, currStatus *IndexingStatus) {
+	for status := range statusChan {
+		switch s := status.(type) {
+		case IndexStatus:
+			currStatus.Mutex.Lock()
+			atomic.AddUint64(&currStatus.IndexesWritten, 1)
+			currStatus.Mutex.Unlock()
+			if int(currStatus.IndexesWritten)%IndexPrintFreq == 0 {
+				log.WithFields(log.Fields{
+					"numIndexes": &currStatus.IndexesWritten,
+				}).Info("Writing indexes...")
+			}
+		case error:
+			log.WithError(s).Error("Encountered error creating index")
+		}
+	}
+}
+
 // BuildIndexes stores indexes for data sent over the channel
 func (is *IndexStore) BuildIndexes(searchIndex, dataIndex bleve.Index) error {
 	log.Info("Building indexes")
 
 	dataChan := make(chan models.IndexData, DefaultChanSize)
 	blockChan := make(chan models.DataBlock, DefaultChanSize)
-	statusChan := make(chan interface{}, 100)
+	statusChan := make(chan interface{}, DefaultChanSize)
 	go is.store.ScanDataBlocks(dataChan, blockChan)
 
 	var wg sync.WaitGroup
-	var err error
 	wg.Add(2)
 
-	var mutex = &sync.Mutex{}
-	var indexesWritten uint64
-
-	go func() {
-		for status := range statusChan {
-			switch status.(type) {
-			case IndexStatus:
-				mutex.Lock()
-				atomic.AddUint64(&indexesWritten, 1)
-				mutex.Unlock()
-				if indexesWritten%IndexPrintFreq == 0 {
-					log.WithFields(log.Fields{
-						"numIndexes": indexesWritten,
-					}).Info("Writing indexes...")
-				}
-			case error:
-				log.WithError(err).Error("Encountered error creating index")
-			}
-
-		}
-	}()
-
-	go CreateIndexFromIndexDataChan(searchIndex, &wg, "mainIndex-%d", dataChan, statusChan)
-	go CreateIndexFromDataBlockChan(dataIndex, &wg, "dataBlockIndex-%d", blockChan, statusChan)
-
-	wg.Wait()
-	if err != nil {
-		log.WithError(err).Error("Encountered error creating index")
+	status := &IndexingStatus{
+		Mutex:          &sync.Mutex{},
+		IndexesWritten: uint64(0),
 	}
 
+	go LogStatusChannel(statusChan, status)
+	go CreateIndexFromIndexDataChan(searchIndex, &wg, "mainIndex-%d", dataChan, statusChan)
+	go CreateIndexFromDataBlockChan(dataIndex, &wg, "dataBlockIndex-%d", blockChan, statusChan)
+	wg.Wait()
+
 	log.WithFields(log.Fields{
-		"numIndexes": indexesWritten,
+		"numIndexes": int(status.IndexesWritten),
 	}).Info("Built Indexes")
+
 	return nil
 }
 

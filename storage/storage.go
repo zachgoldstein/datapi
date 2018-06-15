@@ -21,7 +21,6 @@ const BLOCK_SIZE = int64(50)
 type PhysicalStorer interface {
 	Start(path string, credentials map[string]interface{}) error
 	TestData() error
-	ScanData(interfaceChan chan<- interface{}) error
 	ScanDataBlocks(dataChan chan<- models.IndexData, blockChan chan<- models.DataBlock) error
 
 	RetrieveDataBlockBytes(block *models.DataBlock) ([]byte, error)
