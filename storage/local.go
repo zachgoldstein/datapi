@@ -43,38 +43,6 @@ func (fs *LocalFS) TestData() error {
 	return err
 }
 
-// ScanData will read all data, serialising it into a interface{}
-// and putting it on a channel for consumption. (JSONfiles are used here)
-func (fs *LocalFS) ScanData(interfaceChan chan<- interface{}) error {
-	fs.FilePaths = []string{}
-	err := filepath.Walk(fs.FSLocation, fs.visitPath)
-	if err != nil {
-		return err
-	}
-	for _, location := range fs.FilePaths {
-		f, err := os.Open(location)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-		scanner := bufio.NewScanner(f)
-		err = WriteJSONToInterfaceChan(scanner, interfaceChan)
-		if err != nil {
-			return err
-		}
-
-		scanner.Split(bufio.ScanLines)
-		err = scanner.Err()
-		if err != nil {
-			return err
-		}
-	}
-
-	close(interfaceChan)
-	fmt.Println("Finished scanning data into interface channel")
-	return nil
-}
-
 func (fs *LocalFS) ScanDataBlocksForPath(path string, dataChan chan<- models.IndexData, blockChan chan<- models.DataBlock) error {
 	fmt.Printf("Scanning data at %v \n", path)
 	f, err := os.Open(path)
