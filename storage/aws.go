@@ -49,6 +49,9 @@ func (awsfs *AWSFS) Start(path string, credentials map[string]interface{}) error
 func getPathDetails(awsURL string) (bucket, key string) {
 	awsURL = strings.Replace(awsURL, "https://s3.amazonaws.com/", "", -1)
 	urlParts := strings.SplitN(awsURL, "/", 2)
+	if len(urlParts) == 1 {
+		return urlParts[0], ""
+	}
 	return urlParts[0], urlParts[1]
 }
 
