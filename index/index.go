@@ -19,36 +19,44 @@ import (
 )
 
 type IndexStorer interface {
-	// Save stores an index with only the data we're interested in using to query
-	Save(data string, block *models.DataBlock) error
-	GetSearchIndex(refKey string) (*models.IndexData, error)
-	GetHits(path string, queryParams map[string][]string) ([]string, error)
-
-	GetOne(path string, queryParams map[string][]string) ([]*models.DataBlock, error)
-	GetMany(path string, queryParams map[string][]string) ([]*models.DataBlock, error)
-
-	// SaveDataBlock stores an index with a reference to where physical data is located
-	SaveDataBlock(block *models.DataBlock) error
-	GetDataBlock(refKey string) (*models.DataBlock, error)
-	CreateDataBlock(data []byte) (*models.DataBlock, error)
-
-	CreateNewIndexes(path string) (searchIndex, dataIndex bleve.Index, err error)
-	BuildDataMapping() (*mapping.IndexMapping, error)
-	BuildIndexes(index *bleve.Index) error
-
 	Start(path string) error
+	CreateNewIndexes(searchPath, dataPath string) (searchIndex, dataIndex bleve.Index, err error)
+	BuildDataMapping() (*mapping.IndexMappingImpl, error)
+	BuildIndexes(searchIndex, dataIndex bleve.Index) error
+	GetDataBlock(refKey string) (*models.DataBlock, error)
+	GetSearchIndex(uid string) (*models.IndexData, error)
+	buildSearchRequest(field, searchString string) *bleve.SearchRequest
+	SearchHits(searchString string, params map[string][]string) (search.DocumentMatchCollection, error)
+	GetHits(field, searchString string) (search.DocumentMatchCollection, error)
 }
 
+// DefaultChanSize defines the default channel size to use when processing indexes
 const DefaultChanSize = storage.BLOCK_SIZE * 2
+
+// IndexPrintFreq defines how frequently we should print out a message when indexing
 const IndexPrintFreq = 30
 
+// Status is created and sent on a status channel when each data record is indexed
+type Status struct {
+	ID     string
+	Status string
+}
+
+// IndexingStatus is used to keep track of aggregate information about how indexing process is going
+type IndexingStatus struct {
+	Mutex          *sync.Mutex
+	IndexesWritten uint64
+}
+
+// IndexStore keeps track of the indexes and an object to use when interacting with physical storage
+//
 type IndexStore struct {
 	store       storage.PhysicalStorer
 	dataIndex   bleve.Index
 	searchIndex bleve.Index
 }
 
-// NewIndexStore constructor to get an IndexStore pointer
+// NewIndexStore creates an IndexStore pointer with a storage object
 func NewIndexStore(store storage.PhysicalStorer) *IndexStore {
 	return &IndexStore{
 		store: store,
@@ -93,7 +101,7 @@ func (is *IndexStore) InitIndexes(path string) error {
 	return nil
 }
 
-// CreateNewIndexes creates a new index and populates it with all data
+// CreateNewIndexes creates a new index, builds a mapping for this index and populates it with all data
 func (is *IndexStore) CreateNewIndexes(searchPath, dataPath string) (searchIndex, dataIndex bleve.Index, err error) {
 	mapping, err := is.BuildDataMapping()
 	if err != nil {
@@ -197,20 +205,11 @@ func (is *IndexStore) BuildDataMapping() (*mapping.IndexMappingImpl, error) {
 	return indexMapping, nil
 }
 
-type IndexStatus struct {
-	ID     string
-	Status string
-}
-
-type IndexingStatus struct {
-	Mutex          *sync.Mutex
-	IndexesWritten uint64
-}
-
+// LogStatusChannel logs status information passed into the status channel during indexing
 func LogStatusChannel(statusChan chan interface{}, currStatus *IndexingStatus) {
 	for status := range statusChan {
 		switch s := status.(type) {
-		case IndexStatus:
+		case Status:
 			currStatus.Mutex.Lock()
 			atomic.AddUint64(&currStatus.IndexesWritten, 1)
 			currStatus.Mutex.Unlock()
@@ -254,6 +253,7 @@ func (is *IndexStore) BuildIndexes(searchIndex, dataIndex bleve.Index) error {
 	return nil
 }
 
+// CreateIndexFromIndexDataChan wraps CreateIndexFromChan for search index models
 func CreateIndexFromIndexDataChan(dataIndex bleve.Index, wg *sync.WaitGroup, idFormat string, dataChan chan models.IndexData, statusChan chan interface{}) {
 	genericChan := make(chan interface{}, DefaultChanSize)
 	go CreateIndexFromChan(dataIndex, wg, idFormat, genericChan, statusChan)
@@ -264,6 +264,7 @@ func CreateIndexFromIndexDataChan(dataIndex bleve.Index, wg *sync.WaitGroup, idF
 	log.Info("Finished writing search indexes")
 }
 
+// CreateIndexFromDataBlockChan wraps CreateIndexFromChan for data block models
 func CreateIndexFromDataBlockChan(dataIndex bleve.Index, wg *sync.WaitGroup, idFormat string, dataChan chan models.DataBlock, statusChan chan interface{}) {
 	genericChan := make(chan interface{}, DefaultChanSize)
 	go CreateIndexFromChan(dataIndex, wg, idFormat, genericChan, statusChan)
@@ -274,6 +275,7 @@ func CreateIndexFromDataBlockChan(dataIndex bleve.Index, wg *sync.WaitGroup, idF
 	log.Info("Finished writing datablock indexes")
 }
 
+// CreateIndexFromChan will index data passed through a channel. It attaches a unique id to the data immediately before indexing
 func CreateIndexFromChan(dataIndex bleve.Index, wg *sync.WaitGroup, idFormat string, dataChan chan interface{}, statusChan chan interface{}) {
 	defer wg.Done()
 	for dataToIndex := range dataChan {
@@ -288,13 +290,15 @@ func CreateIndexFromChan(dataIndex bleve.Index, wg *sync.WaitGroup, idFormat str
 		if err != nil {
 			statusChan <- err
 		}
-		statusChan <- IndexStatus{
+		statusChan <- Status{
 			ID:     id,
 			Status: "Success",
 		}
 	}
 }
 
+// GetDataBlock retrieves a data block pointing at cloud storage for a given reference key
+// all search indexes are created with a reference key that points at a data block key.
 func (is *IndexStore) GetDataBlock(refKey string) (*models.DataBlock, error) {
 	qs := fmt.Sprintf("RefKey:%s", refKey)
 	log.WithFields(log.Fields{
@@ -310,7 +314,7 @@ func (is *IndexStore) GetDataBlock(refKey string) (*models.DataBlock, error) {
 		return nil, err
 	}
 	if len(searchResults.Hits) == 0 {
-		err := fmt.Errorf("No search hits found for refkey", refKey)
+		err := fmt.Errorf("No search hits found for refkey: %s", refKey)
 		log.WithError(err).Error("Could not find a data block index")
 		return nil, err
 	}
@@ -328,6 +332,7 @@ func (is *IndexStore) GetDataBlock(refKey string) (*models.DataBlock, error) {
 	return dataBlock, nil
 }
 
+// GetSearchIndex will retrieve a specific search index with it's uid
 func (is *IndexStore) GetSearchIndex(uid string) (*models.IndexData, error) {
 	query := bleve.NewDocIDQuery([]string{uid})
 	search := bleve.NewSearchRequest(query)
@@ -413,6 +418,8 @@ func (is *IndexStore) buildSearchRequest(field, searchString string) *bleve.Sear
 	return search
 }
 
+// SearchHits checks all fields in all records for results that contain a search string.
+// Used for requests of the form /search/{search}
 func (is *IndexStore) SearchHits(searchString string, params map[string][]string) (search.DocumentMatchCollection, error) {
 	log.WithFields(log.Fields{
 		"searchString": searchString,
@@ -435,6 +442,8 @@ func (is *IndexStore) SearchHits(searchString string, params map[string][]string
 	return searchResults.Hits, nil
 }
 
+// GetHits will find results where a specific field matches a search string.
+// Used for requests of the form /{field}/{value}
 func (is *IndexStore) GetHits(field, searchString string) (search.DocumentMatchCollection, error) {
 	log.WithFields(log.Fields{
 		"searchString": searchString,
@@ -452,9 +461,4 @@ func (is *IndexStore) GetHits(field, searchString string) (search.DocumentMatchC
 		return nil, err
 	}
 	return searchResults.Hits, nil
-}
-
-func (is *IndexStore) GetMany(queryParams map[string][]string) ([]*models.DataBlock, error) {
-	fmt.Println("Index searching for many items...")
-	return nil, nil
 }

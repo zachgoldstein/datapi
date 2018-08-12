@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -13,11 +14,14 @@ import (
 	"github.com/zachgoldstein/datatoapi/storage"
 )
 
+// API starts an http server that interacts with an index store and an interface to data storage
+// in the cloud. It serves requests for specific fields
 type API struct {
 	indexStore  *index.IndexStore
 	realStorage storage.PhysicalStorer
 }
 
+// NewAPI creates an instance of API
 func NewAPI(indexStore *index.IndexStore, realStorage storage.PhysicalStorer) *API {
 	return &API{
 		indexStore:  indexStore,
@@ -25,11 +29,12 @@ func NewAPI(indexStore *index.IndexStore, realStorage storage.PhysicalStorer) *A
 	}
 }
 
+// Start creates our http server and starts listening for requests on a port
 func (api *API) Start(port int, indexStore *index.IndexStore, physStore storage.PhysicalStorer) error {
 	r := mux.NewRouter()
 	r.HandleFunc("/search/{search}", api.Search)
-	r.HandleFunc("/many", api.GetMany)
 	r.HandleFunc("/{field}/{value}", api.Get)
+	r.HandleFunc("/all/{field}/{value}", api.All)
 
 	addr := fmt.Sprintf(":%v", port)
 	log.WithFields(log.Fields{
@@ -39,6 +44,11 @@ func (api *API) Start(port int, indexStore *index.IndexStore, physStore storage.
 	return http.ListenAndServe(addr, r)
 }
 
+// Search will return the closest json result, looking through all fields for values
+// that contain the search string.
+// It will take the closest search result, retrieve the associated data block index,
+// then use this to retrieve the chunk of raw data from cloud storage. It will search
+// this chunk for the record we're interested in, then return that in json format.
 func (api *API) Search(w http.ResponseWriter, r *http.Request) {
 	log.Info("API Searching for results")
 	vars := mux.Vars(r)
@@ -78,6 +88,11 @@ func (api *API) Search(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(fullRecord))
 }
 
+// Get will return the closest json result, looking a specific field for values
+// that contain the search string.
+// It will take the closest search result, retrieve the associated data block index,
+// then use this to retrieve the chunk of raw data from cloud storage. It will search
+// this chunk for the record we're interested in, then return that in json format.
 func (api *API) Get(w http.ResponseWriter, r *http.Request) {
 	log.Info("API Retrieving results for field:value")
 
@@ -117,6 +132,64 @@ func (api *API) Get(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(fullRecord))
 }
 
+// All will return all json results, looking for a specific field for values
+// that contain the search string.
+// It will take all search results, retrieve the associated data block indexes,
+// then use this to retrieve the chunks of raw data from cloud storage. It will search
+// this chunk for the record we're interested in, then return that in json format.
+func (api *API) All(w http.ResponseWriter, r *http.Request) {
+	log.Info("API Retrieving all results for field:value")
+
+	vars := mux.Vars(r)
+
+	hits, err := api.indexStore.GetHits(vars["field"], vars["value"])
+	if err != nil {
+		log.WithError(err).Error("Could not find index hits")
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	log.WithFields(log.Fields{
+		"hits": len(hits),
+	}).Info("Retrieved hits")
+
+	records := [][]byte{}
+	for _, hit := range hits {
+		blockBytes, err := api.getDataBlockBytes(w, hit)
+		if err != nil {
+			log.WithError(err).Error("Could not get data block bytes")
+			continue
+		}
+		fullRecord, err := storage.GetRecordInDataChunk(blockBytes, vars["field"], vars["value"])
+		if err != nil {
+			log.WithError(err).Error("Could not get record in data chunk")
+			continue
+		}
+		if !isJSON(fullRecord) {
+			err = fmt.Errorf("Retrieved record but data is malformed")
+			log.WithError(err).WithFields(log.Fields{
+				"record": fullRecord,
+			}).Error("Retrieved record but data is malformed")
+			continue
+		}
+		records = append(records, fullRecord)
+	}
+	log.WithFields(log.Fields{
+		"hits": len(records),
+	}).Info("Combing records")
+
+	combinedRecords := bytes.Join(records, []byte(`,`))
+
+	// insert '[' to the front
+	combinedRecords = append(combinedRecords, 0)
+	copy(combinedRecords[1:], combinedRecords[0:])
+	combinedRecords[0] = byte('[')
+
+	// append ']'
+	combinedRecords = append(combinedRecords, ']')
+
+	w.Write(combinedRecords)
+}
+
 func (api *API) getDataBlockBytes(w http.ResponseWriter, hit *search.DocumentMatch) ([]byte, error) {
 	// Get the chunk of data containing the record we're interested in
 	_, ok := hit.Fields["RefKey"]
@@ -140,10 +213,6 @@ func (api *API) getDataBlockBytes(w http.ResponseWriter, hit *search.DocumentMat
 		return nil, err
 	}
 	return blockBytes, nil
-}
-
-func (api *API) GetMany(w http.ResponseWriter, r *http.Request) {
-	fmt.Println("GOT REQUEST TO GET MANY ITEMS")
 }
 
 func isJSON(str []byte) bool {

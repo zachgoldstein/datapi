@@ -26,14 +26,15 @@ type Config struct {
 	Port        int
 }
 
+// NewEngine creates an instance of Engine
 func NewEngine() *Engine {
 	return &Engine{}
 }
 
+// Start will start up
 func (eng *Engine) Start(config Config) error {
 	eng.config = config
 
-	// realStorage := storage.NewLocalFS()
 	eng.realStorage = detectStorageType(eng.config.StoragePath)
 	eng.indexStore = index.NewIndexStore(eng.realStorage)
 	eng.api = api.NewAPI(eng.indexStore, eng.realStorage)
