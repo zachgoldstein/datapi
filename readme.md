@@ -10,6 +10,8 @@
 
 # Datatoapi
 
+[![asciicast](https://asciinema.org/a/yNQM5S1GNokjoXYy7xVUsU0PT.png)](https://asciinema.org/a/yNQM5S1GNokjoXYy7xVUsU0PT)
+
 ## When would you use this?
 
 - Your data is sitting in simple files (jsonfiles, csv, etc) on cloud storage
@@ -40,18 +42,35 @@ In this example, the file we're interested in is very small (890K), but when you
 
 ## Installation
 
-(TODO)
+Clone the repo here and run with `go run main.go`
+A binary isn't available quite yet.
 
 ## Usage
 
-(TODO)
+Running the service:
 ```
 go run main.go -storage "https://s3.amazonaws.com/datatoapi"
 ```
 
-## Options
+Retrieving a specific result:
+```
+curl "http://127.0.0.1:8123/id/1000001"
+```
 
-(TODO)
+Retrieving all results:
+```
+curl "http://127.0.0.1:8123/all/has_existential_identity_crisis/true"
+```
+
+Searching for results:
+```
+curl "http://127.0.0.1:8123/search/Brakus"
+```
+
+If you want pretty, formatted results, pipe this data through `jq`!
+```
+curl "http://127.0.0.1:8123/id/1000001" | jq '.'
+```
 
 ## Supported data formats
 
@@ -73,3 +92,5 @@ go run main.go -storage "https://s3.amazonaws.com/datatoapi"
 
 - Write heavy situations where your data set is rapidly changing
 - You need some sort of authorisation scheme associated with the data. You'll have to build this functionality separately.
+
+:shipit:
