@@ -44,7 +44,6 @@ func (fs *LocalFS) TestData() error {
 }
 
 func (fs *LocalFS) ScanDataBlocksForPath(path string, dataChan chan<- models.IndexData, blockChan chan<- models.DataBlock) error {
-	fmt.Printf("Scanning data at %v \n", path)
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -56,12 +55,10 @@ func (fs *LocalFS) ScanDataBlocksForPath(path string, dataChan chan<- models.Ind
 		return err
 	}
 
-	fmt.Println("Finished scanning")
 	return scanner.Err()
 }
 
 func (fs *LocalFS) visitPath(path string, f os.FileInfo, err error) error {
-	fmt.Printf("Visited: %s\n", path)
 	if f.IsDir() {
 		return nil
 	}
